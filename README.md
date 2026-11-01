@@ -5,8 +5,11 @@ A [Tern](https://docs.stencil.so/tern/) terminal plugin that monitors your LLM A
 _How this project got its name:_
 
 > *I was going to go get some fries on the pier.*
+> 
 > *You'd better hurry. Someone's down to the last fry.*
+> 
 > *The last fry?! How do you know?*
+> 
 > *I ate it. 🍟*
 
 ![Manage block](images/last-fry.png)
