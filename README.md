@@ -2,6 +2,13 @@
 
 A [Tern](https://docs.stencil.so/tern/) terminal plugin that monitors your LLM API quota ("fries") — a live statusline segment plus a manage block with one card per provider.
 
+_How this project got its name:_
+
+> *I was going to go get some fries on the pier.*
+> *You'd better hurry. Someone's down to the last fry.*
+> *The last fry?! How do you know?*
+> *I ate it. 🍟*
+
 ![Manage block](images/last-fry.png)
 _Manage block: one card per provider with per-window progress bars._
 
@@ -11,7 +18,7 @@ _Status line: a live 🍟 segment per provider._
 ## Install
 
 ```sh
-tern plugin install github.com/OWNER/LastFry
+tern plugin install github.com/KinseyD/LastFry
 ```
 
 (or paste the repo URL in Tern's plugin settings).
