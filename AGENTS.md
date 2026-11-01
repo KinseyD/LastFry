@@ -4,7 +4,7 @@ A [Tern](https://docs.stencil.so/tern/) terminal plugin (Luau) that monitors
 LLM API quota and shows it in a statusline segment and a manage block.
 The package is this repository's root (`plugin.toml` sits here).
 
-**Fun rule:** quota is called 🍟 **fries** (薯条) everywhere — statusline,
+**Fun rule:** quota is called 🍟 **fries** everywhere — statusline,
 cards, toasts ("Fries running low", "Out of fries", `42.69 fries`). Keep it
 playful but not spammy: one 🍟 per segment/card, no extra emoji noise.
 
@@ -96,7 +96,7 @@ Logs: `%LOCALAPPDATA%/Tern/Logs/tern.log` (window half) and
 ## Conventions
 
 - Layout: `plugin.toml`, `host.luau`, `window.luau`, `lib/` at the repo
-  root; the repo installs as-is (`tern plugin install github.com/OWNER/REPO`).
+  root; the repo installs as-is (`tern plugin install github.com/KinseyD/LastFry`).
 - Bump `version` in `plugin.toml` for every release; keep the default branch
   installable.
 - Statusline formatter is a pure function over an upvalue snapshot; call
