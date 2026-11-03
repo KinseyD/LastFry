@@ -50,6 +50,14 @@ Pay-as-you-go accounts show their balance in "fries"; plan accounts show 5h/7d w
 - Warn threshold for remaining quota (default 20%)
 - Quota bar full scale in fries (default 100)
 
+## Known issue
+
+Tern's daemon can report a stale status in `tern plugin list` after you toggle this plugin (or any plugin) in Preferences: the catalog may keep saying `ready` even though the plugin is off, while the statusline segment and the manage block correctly follow the switch. This is a Tern bug in the settings-reload path, not a Last fry one. If the list looks wrong, force a refresh:
+
+```sh
+tern plugin reload last-fry
+```
+
 ## Develop
 
 ```sh
