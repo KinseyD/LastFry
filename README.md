@@ -13,7 +13,7 @@ _How this project got its name:_
 > *I ate it. 🍟*
 
 ![Manage block](images/last-fry.png)
-_Manage block: one card per provider with per-window progress bars._
+_Manage block: one card per provider; usage bars shade continuously green → amber → red._
 
 ![Status line](images/status_line.png)
 _Status line: a live 🍟 segment per provider._

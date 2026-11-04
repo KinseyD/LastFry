@@ -76,12 +76,53 @@ local function drain_inbox(done: (n: number, cx: WindowCx?) -> ())
 	end
 end
 
+----------------------------------------------------------------- meter ramp
+-- Continuous meter colors for the manage block: a sheet lerping the meter
+-- fill (--mt) over --sf-meter, the USED fraction the meter node carries —
+-- the theme's green (--ok) → amber across the warn leg, amber → red by
+-- 0.98. color-mix() percentages are not implemented in Tern's engine
+-- (live-checked: only the fixed 50/50 form parses), so the lerp runs on
+-- relative-color channel math instead — nested rgb(from …) with the amber
+-- and red anchors as literals and clamp() following the value. The warn
+-- position is the live warnBelowPct setting, so the sheet is baked here and
+-- re-installed only when the setting changes (tern.css is window-half only;
+-- a surface without the sheet, like the web tab, keeps the meters' discrete
+-- warn/bad thresholds — host.luau sets them).
+local ramp_warn_baked: number? = nil
+
+local function sync_meter_ramp(warnBelowPct: number)
+	-- degenerate settings stay ordered: clamp the warn leg inside (0.01, 0.97)
+	local warn = math.min(math.max(1 - warnBelowPct / 100, 0.01), 0.97)
+	if ramp_warn_baked == warn then
+		return
+	end
+	ramp_warn_baked = warn
+	local w = ("%.4f"):format(warn)
+	local bad = "0.98"
+	-- amber #d29922 and red #e3524a as literals (mid-luminance, read on
+	-- light and dark themes); t1 = u / W, t2 = (u − W) / (bad − W)
+	local t1 = ("clamp(0, var(--sf-meter) / %s, 1)"):format(w)
+	local t2 = ("clamp(0, (var(--sf-meter) - %s) / (%s - %s), 1)"):format(w, bad, w)
+	local leg1 = ("rgb(from var(--ok) calc(r + (210 - r) * %s) calc(g + (153 - g) * %s) calc(b + (34 - b) * %s))")
+		:format(t1, t1, t1)
+	local ramp = ("rgb(from %s calc(r + (227 - r) * %s) calc(g + (82 - g) * %s) calc(b + (74 - b) * %s))")
+		:format(leg1, t2, t2, t2)
+	tern.css(
+		"meter-ramp",
+		([[
+.sf-main[data-surface='plugin.last-fry.manage'] .sf-meter,
+.sf-dock[data-surface='plugin.last-fry.manage'] .sf-meter,
+.sf-layer[data-surface='plugin.last-fry.manage'] .sf-meter {
+	--mt: %s;
+}
+]]):format(ramp)
+	)
+end
+
 --------------------------------------------------------------------- statusline
--- snapshot upvalue: chrome.status formatters must be pure (no cx, 4ms
+-- Snapshot upvalue: chrome.status formatters must be pure (no cx, 4ms
 -- budget); update the snapshot on data changes and tern.chrome.refresh() to
 -- drop the formatter cache and redraw.
-
-type SnapProvider = { id: string, name: string, result: store.Result? }
 
 local snap: { providers: { SnapProvider }, warnBelowPct: number } = { providers = {}, warnBelowPct = 20 }
 
@@ -97,6 +138,8 @@ local function sync_snapshot()
 	end
 	-- kind rides along with the result (window / money); no result → muted tail
 	snap = { providers = list, warnBelowPct = settings.warnBelowPct }
+	-- the meter ramp follows the live warn threshold (no-op when unchanged)
+	sync_meter_ramp(settings.warnBelowPct)
 end
 
 -- after set_result: sync the snapshot and trigger a redraw (the formatter

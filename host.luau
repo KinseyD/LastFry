@@ -11,7 +11,9 @@
 -- row (30d full-width below, a lone window fills the row), the countdown
 -- right-aligned to its half's edge; money = Balance label with the amount
 -- at the row's end. Bars fill with the USED fraction so thresholds read
--- naturally (motion.md: value ≥ warn/bad).
+-- naturally (motion.md: value ≥ warn/bad); the window half's "meter-ramp"
+-- sheet lerps the fill color continuously (green → amber → red), with the
+-- discrete thresholds as the no-sheet fallback.
 
 local store = require("./lib/store")
 local providers = require("./lib/providers")
