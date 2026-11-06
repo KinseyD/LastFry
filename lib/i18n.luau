@@ -144,6 +144,9 @@ local en: { [string]: string } = {
 	["settings.hint.scale"] = "The Quota bar fills at this many fries",
 	["settings.unit.fries"] = "fries",
 	["settings.err.scaleRange"] = "Quota bar scale must be at least 1",
+	["settings.label.rotate"] = "Statusline rotation",
+	["settings.hint.rotate"] = "Seconds each fries provider stays in the status bar (2–86400), default 8",
+	["settings.err.rotateRange"] = "Rotation must be 2–86400 seconds",
 
 	-- provider adapters: dropdown labels, option details, parse errors
 	["pv.deepseek.label"] = "DeepSeek",

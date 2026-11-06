@@ -1,7 +1,7 @@
 schema = 1
 id = "last-fry"
 name = "Last fry"
-version = "0.3.11"
+version = "0.3.12"
 description = "🍟 Monitor LLM API quota — your fries: scheduled checks, a manage block, a statusline segment, omp import."
 icon = "gauge"
 host = "host.luau"

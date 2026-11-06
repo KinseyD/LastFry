@@ -35,13 +35,13 @@ export type Result = {
 	currency: string?,
 }
 
-export type Settings = { intervalSec: number, warnBelowPct: number, language: string, friesScale: number }
+export type Settings = { intervalSec: number, warnBelowPct: number, language: string, friesScale: number, rotateSec: number }
 
 export type BackoffEntry = { fails: number, untilTs: number }
 
 local M = {}
 
-M.DEFAULT_SETTINGS = { intervalSec = 300, warnBelowPct = 20, language = "en", friesScale = 100 } :: Settings
+M.DEFAULT_SETTINGS = { intervalSec = 300, warnBelowPct = 20, language = "en", friesScale = 100, rotateSec = 8 } :: Settings
 
 local function get(key: string, fallback: any): any
 	local ok, v = pcall(tern.kv.get, key)
@@ -155,12 +155,16 @@ function M.get_settings(): Settings
 		if scale ~= nil and scale >= 1 then
 			s.friesScale = scale
 		end
+		local rotate = tonumber(raw.rotateSec)
+		if rotate ~= nil and rotate >= 2 and rotate <= 86400 then
+			s.rotateSec = math.floor(rotate)
+		end
 	end
 	return s
 end
 
 function M.set_settings(s: Settings)
-	set("settings", { intervalSec = s.intervalSec, warnBelowPct = s.warnBelowPct, language = s.language, friesScale = s.friesScale })
+	set("settings", { intervalSec = s.intervalSec, warnBelowPct = s.warnBelowPct, language = s.language, friesScale = s.friesScale, rotateSec = s.rotateSec })
 end
 
 --------------------------------------------------------------- backoff

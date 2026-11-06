@@ -16,7 +16,7 @@ _How this project got its name:_
 _Manage block: one card per provider; usage bars shade continuously green → amber → red._
 
 ![Status line](images/status_line.png)
-_Status line: a live 🍟 segment per provider._
+_Status line: one live 🍟 segment group at a time, rotating through providers every few seconds._
 
 ## Install
 

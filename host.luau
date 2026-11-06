@@ -46,7 +46,9 @@ type State = {
 	warnCur: number,
 	scale: string,
 	scaleCur: number,
-	focus: string?, -- without a form: interval / warn / scale
+	rotate: string,
+	rotateCur: number,
+	focus: string?, -- without a form: interval / warn / scale / rotate
 	setNotice: Notice?,
 }
 
@@ -314,6 +316,18 @@ local function field_box(state: State, field: string): Box?
 				state.scale, state.scaleCur = t2, c
 			end,
 		}
+	elseif field == "rotate" then
+		return {
+			text = function()
+				return state.rotate
+			end,
+			cur = function()
+				return state.rotateCur
+			end,
+			set = function(t2, c)
+				state.rotate, state.rotateCur = t2, c
+			end,
+		}
 	end
 	return nil
 end
@@ -386,10 +400,16 @@ local function save_settings(state: State)
 		state.setNotice = { text = t("settings.err.scaleRange"), tone = "error" }
 		return
 	end
+	local rotate = tonumber(state.rotate)
+	if rotate == nil or rotate < 2 or rotate > 86400 then
+		state.setNotice = { text = t("settings.err.rotateRange"), tone = "error" }
+		return
+	end
 	local s = store.get_settings()
 	s.intervalSec = math.floor(interval)
 	s.warnBelowPct = warn
 	s.friesScale = scale
+	s.rotateSec = math.floor(rotate)
 	store.set_settings(s)
 	state.setNotice = { text = t("settings.saved"), tone = "success" }
 end
@@ -644,6 +664,19 @@ local function settings_card(state: State): Node
 				}),
 			}
 		),
+		ui.node(
+			"field",
+			{ key = "s_rotate", label = t("settings.label.rotate"), hint = t("settings.hint.rotate") },
+			{
+				ui.node("input", {
+					key = "rotate",
+					text = state.rotate,
+					cursor = utf16_at(state.rotate, state.rotateCur),
+					unit = t("settings.unit.sec"),
+					mono = true,
+				}),
+			}
+		),
 		ui.button(t("settings.btn.save"), { icon = "save", actions = { click = "settings-save" } }),
 	}
 	if state.setNotice ~= nil then
@@ -690,15 +723,20 @@ local manage: BlockDef<State> = {
 				else defaults.warnBelowPct),
 			warnCur = 0,
 			scale = tostring(if saved ~= nil and (saved :: any).scale ~= nil
-				then (saved :: any).scale
-				else defaults.friesScale),
+			then (saved :: any).scale
+			else defaults.friesScale),
 			scaleCur = 0,
+			rotate = tostring(if saved ~= nil and (saved :: any).rotate ~= nil
+			then (saved :: any).rotate
+			else defaults.rotateSec),
+			rotateCur = 0,
 			focus = nil,
 			setNotice = nil,
 		}
 		state.intervalCur = #state.interval
 		state.warnCur = #state.warn
 		state.scaleCur = #state.scale
+		state.rotateCur = #state.rotate
 		-- The window half writes kv; re-render so the table follows it
 		local function poll()
 			if pane_running(cx.pane) then
@@ -775,7 +813,7 @@ local manage: BlockDef<State> = {
 		if key.name == "tab" then
 			local order: { string } = if state.form ~= nil
 				then { "name", "baseUrl", "apiKey" }
-				else { "interval", "warn", "scale" }
+				else { "interval", "warn", "scale", "rotate" }
 			local cur = if state.form ~= nil then (state.form :: Form).focus else state.focus
 			local idx = 0
 			for i, f in order do
@@ -891,7 +929,7 @@ local manage: BlockDef<State> = {
 		elseif ev.ev == "focus" and ev.id ~= nil then
 			local field = (ev.id :: string):match("%.([%w_]+)$")
 			local is_form_field = field == "name" or field == "baseUrl" or field == "apiKey"
-			local is_set_field = field == "interval" or field == "warn" or field == "scale"
+			local is_set_field = field == "interval" or field == "warn" or field == "scale" or field == "rotate"
 			if state.form ~= nil and is_form_field then
 				(state.form :: Form).focus = field
 			elseif state.form == nil and is_set_field then
@@ -904,7 +942,7 @@ local manage: BlockDef<State> = {
 	end,
 
 	save = function(state)
-		return { form = state.form, interval = state.interval, warn = state.warn, scale = state.scale }
+		return { form = state.form, interval = state.interval, warn = state.warn, scale = state.scale, rotate = state.rotate }
 	end,
 }
 

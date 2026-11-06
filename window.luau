@@ -126,6 +126,12 @@ end
 
 local snap: { providers: { SnapProvider }, warnBelowPct: number } = { providers = {}, warnBelowPct = 20 }
 
+-- Rotation cursor: index of the provider currently shown in the statusline.
+-- It advances via the dedicated rotation timer below — NOT via os.time()
+-- math inside the formatter, which must stay a pure function over upvalue
+-- state (AGENTS.md: no clock reads in chrome.status formatters).
+local rotate_idx = 0
+
 local function sync_snapshot()
 	i18n.sync()
 	local settings = store.get_settings()
@@ -260,9 +266,10 @@ sync_snapshot()
 
 tern.chrome.status(function(_pane)
 	local segments: { any } = {}
-	local any_enabled = false
-	for _, p in snap.providers do
-		any_enabled = true
+	if #snap.providers > 0 then
+		-- exactly one provider at a time, rotating; modulo-on-read keeps the
+		-- pick in range when the enabled list shrinks between rotations
+		local p = snap.providers[(rotate_idx % #snap.providers) + 1]
 		for _, part in provider_segments(p.name, p.result, snap.warnBelowPct) do
 			table.insert(segments, {
 				text = part.text,
@@ -270,8 +277,7 @@ tern.chrome.status(function(_pane)
 				command = "plugin.last-fry.manage",
 			})
 		end
-	end
-	if not any_enabled then
+	else
 		table.insert(segments, {
 			text = t("status.none"),
 			tone = "muted",
@@ -335,6 +341,23 @@ end
 -- wait a moment after load for the first round (kv is ready; keeps clear of
 -- the entry-load budget)
 tern.timer(1500, tick)
+
+---------------------------------------------------------------- statusline rotate
+
+-- Self-rearming one-shot rotation timer, separate from the query tick: each
+-- round re-reads settings (rotateSec changes apply without reload) and, when
+-- more than one provider is enabled, advances rotate_idx and drops the
+-- formatter cache. With ≤1 provider it just re-arms — one wakeup per period
+-- is fine; boring > clever. The file scope runs once per window-half load,
+-- so exactly one chain is ever alive.
+local function rotate_tick()
+	if #snap.providers > 1 then
+		rotate_idx = (rotate_idx + 1) % #snap.providers
+		tern.chrome.refresh()
+	end
+	tern.timer(store.get_settings().rotateSec * 1000, rotate_tick)
+end
+tern.timer(store.get_settings().rotateSec * 1000, rotate_tick)
 
 ------------------------------------------------------------------ omp import
 
