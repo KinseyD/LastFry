@@ -1,6 +1,6 @@
 # 🍟 Last fry
 
-A [Tern](https://docs.stencil.so/tern/) terminal plugin that monitors your LLM API quota ("fries") — a live statusline segment plus a manage block with one card per provider.
+A [Tern](https://docs.stencil.so/tern/) terminal plugin that monitors your LLM API quota.
 
 > *I was going to go get some fries on the pier.*
 > 
