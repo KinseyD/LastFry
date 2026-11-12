@@ -1,18 +1,20 @@
 --!strict
--- 🍟 kv 存储层：两个半区（host 块 + window 命令）共用的唯一状态。
--- 键：
---   providers : { Provider }                 供应商配置
---   results   : { [id] = Result }             最近一次查询结果
---   settings  : Settings                      刷新间隔 / 预警线 / 界面语言
---   backoff   : { [id] = { fails, untilTs } }   失败退避（跨重载持久化）
---   key_inbox : { [id] = key }                host 块 → window 半区的密钥中转
--- API Key 本体存 tern.secrets（仅 window 半区可写），名字为 "provider.<id>"。
--- 用户可见文案一律经 lib/i18n.luau 的 t()（settings.language 选语言）。
+-- 🍟 kv store layer: the single source of state shared by both halves
+-- (host blocks + window commands).
+-- Keys:
+--   providers : { Provider }                 provider configs
+--   results   : { [id] = Result }             latest query result per provider
+--   settings  : Settings                      refresh interval / warn threshold / UI language
+--   backoff   : { [id] = { fails, untilTs } }   failure backoff (persisted across reloads)
+--   key_inbox : { [id] = key }                key hand-off from the host block to the window half
+-- API keys themselves live in tern.secrets (writable by the window half only),
+-- named "provider.<id>".
+-- All user-visible strings go through lib/i18n.luau's t() (settings.language picks the language).
 
 export type Provider = {
 	id: string,
 	name: string,
-	type: string, -- 适配器 id
+	type: string, -- adapter id
 	baseUrl: string?,
 	enabled: boolean,
 }
@@ -24,9 +26,9 @@ export type QuotaWindow = { remainingPct: number, resetAtMs: number? }
 export type Result = {
 	status: "ok" | "error" | "stale",
 	lines: { Line },
-	updatedAt: number, -- os.time()，秒
+	updatedAt: number, -- os.time(), seconds
 	error: string?,
-	alert: "low" | "out"?, -- 薯条不多了 / 薯条没了
+	alert: "low" | "out"?, -- fries running low / out of fries
 	kind: string?,
 	fiveHour: QuotaWindow?,
 	weekly: QuotaWindow?,
@@ -84,7 +86,8 @@ function M.set_providers(list: { Provider })
 	set("providers", tern.json.array(list))
 end
 
--- 删除供应商：连带清掉结果与退避状态（密钥由 window 半区删，走 lastfry://forget）
+-- Remove a provider: also drop its result and backoff state (the key is
+-- deleted by the window half via lastfry://forget)
 function M.remove_provider(id: string)
 	local list = M.get_providers()
 	local out: { Provider } = {}
@@ -198,7 +201,7 @@ function M.put_key_inbox(id: string, key: string)
 	set("key_inbox", inbox)
 end
 
--- 取走全部待封存密钥（读后即清，避免明文长期留在 kv.json）
+-- Take all pending keys to seal (read-and-clear, so plaintext never lingers in kv.json)
 function M.take_key_inbox(): { [string]: string }
 	local inbox = get("key_inbox", {})
 	if type(inbox) == "table" and next(inbox) ~= nil then

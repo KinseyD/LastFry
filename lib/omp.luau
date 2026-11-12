@@ -1,11 +1,11 @@
 --!strict
--- 🍟 omp（oh my pi）导入：`omp auth export` → 供应商凭据 JSON，
--- 加上 ~/.omp/agent/models.yml（可选）里的自定义 baseUrl。
--- 本机验证过 export 格式（密钥已打码）：
+-- 🍟 omp (oh my pi) import: `omp auth export` → provider credentials JSON,
+-- plus custom baseUrls from ~/.omp/agent/models.yml (optional).
+-- Export format verified on this machine (keys redacted):
 --   { "version": 1,
 --     "credentials": [ { "provider": "zhipu-coding-plan",
 --                        "credential": { "type": "api_key", "key": "…", "source": "login" } } ] }
--- 只在本插件内处理密钥；任何日志/提示都不带 key 本体。
+-- Keys are handled only inside this plugin; no log or toast ever carries a key.
 
 local providers = require("./providers")
 
@@ -14,29 +14,31 @@ local i18n = require("./i18n")
 local t = i18n.t
 
 export type ImportedEntry = {
-	name: string, -- omp 供应商名，作为显示名
-	type: string, -- 适配器 id
+	name: string, -- omp provider name, used as the display name
+	type: string, -- adapter id
 	baseUrl: string?,
 	key: string,
 }
 
--- `omp auth export` 的退出四元组：tern.process.run 的 ProcessResult（正常
--- 回调）与 process_exit 事件的 ProcessExitEvent（子进程活过了自己的 VM，
--- 由重载后的新 VM 收尾）字段相同，共用同一条转换路径（outcome_from_exit）。
+-- The exit quad from `omp auth export`: the ProcessResult of tern.process.run
+-- (normal callback) and the ProcessExitEvent of the process_exit event (child
+-- outlived its own VM, finished by the reloaded new VM) share the same fields,
+-- so both go through one conversion path (outcome_from_exit).
 export type ExitQuad = { status: number, stdout: string, stderr: string, timed_out: boolean }
 
 export type ImportOutcome = {
 	imported: { ImportedEntry },
-	skipped: { string }, -- 跳过原因（含供应商名）
+	skipped: { string }, -- skip reasons (include the provider name)
 	err: string?,
 }
 
 local M = {}
 
------------------------------------------------------------------- omp 可执行文件
+------------------------------------------------------------------ omp executable
 
--- 先试 PATH 上的 omp（从桌面启动的 Tern 环境可能更小），再落到 Tern 托管的位置。
--- USERPROFILE 动态解析，绝不硬编码用户名。
+-- Try the omp on PATH first (Tern launched from the desktop may see a smaller
+-- environment), then fall back to Tern-managed locations.
+-- USERPROFILE is resolved dynamically; never hardcode a username.
 local function exe_candidates(): { string }
 	local c: { string } = { "omp" }
 	local home = tern.getenv("USERPROFILE")
@@ -53,8 +55,9 @@ local function first_line(s: string?): string
 	return (s:match("^[^\r\n]+")) or ""
 end
 
--- 依次尝试候选可执行文件跑 `auth export`；所有候选都起不来（不在 PATH
--- 等）时以 r = nil 收尾，失败状态在 outcome_from_exit 里统一报。
+-- Try each candidate executable in order to run `auth export`; when no
+-- candidate can even start (not on PATH, etc.) it ends with r = nil, and the
+-- failure is reported uniformly in outcome_from_exit.
 local function run_export(cb: (r: ExitQuad?, cx: any) -> ())
 	local candidates = exe_candidates()
 	local function attempt(i: number)
@@ -65,15 +68,15 @@ local function run_export(cb: (r: ExitQuad?, cx: any) -> ())
 		end
 		local ok = pcall(tern.process.run, { exe, "auth", "export" }, { timeout_ms = 15000 }, cb)
 		if not ok then
-			attempt(i + 1) -- 这个候选根本起不来（不在 PATH），换下一个
+			attempt(i + 1) -- this candidate could not start at all (not on PATH); try the next
 		end
 	end
 	attempt(1)
 end
 
------------------------------------------------------------------- 名称 → 适配器
+------------------------------------------------------------------ name → adapter
 
--- omp 供应商名（或自定义 baseUrl）→ 适配器 id。按顺序子串匹配。
+-- omp provider name (or custom baseUrl) → adapter id. Substring match in order.
 type Rule = { pat: string, adapter: string }
 
 local NAME_RULES: { Rule } = {
@@ -115,7 +118,7 @@ end
 
 local function strip_value(v: string): string
 	v = v:match("^%s*(.-)%s*$") or v
-	v = (v:gsub("%s+#.*$", "")) -- 去行尾注释
+	v = (v:gsub("%s+#.*$", "")) -- strip trailing comment
 	if #v >= 2 and v:sub(1, 1) == '"' and v:sub(-1) == '"' then
 		return v:sub(2, -2)
 	end
@@ -125,7 +128,8 @@ local function strip_value(v: string): string
 	return v
 end
 
--- 极小 YAML 扫描器：只要 providers.<id>.baseUrl（两层缩进结构），不引第三方库。
+-- Minimal YAML scanner: only wants providers.<id>.baseUrl (two-level
+-- indentation); no third-party library.
 local function scan_models(text: string): { [string]: string }
 	local out: { [string]: string } = {}
 	local in_providers = false
@@ -135,7 +139,7 @@ local function scan_models(text: string): { [string]: string }
 		local indent = #(line:match("^(%s*)") or "")
 		local content = (line:match("^%s*(.-)%s*$") or "")
 		if content == "" or content:sub(1, 1) == "#" then
-			-- 空行 / 注释
+			-- blank line / comment
 		elseif indent == 0 then
 			in_providers = content == "providers:"
 			current = nil
@@ -166,9 +170,10 @@ function M.read_models_baseurls(): { [string]: string }
 	return {}
 end
 
------------------------------------------------------------------- 导入主流程
+------------------------------------------------------------------ import flow
 
--- 解析 `omp auth export` 的 stdout；正常回调与 process_exit 补送两条路共用。
+-- Parse the stdout of `omp auth export`; shared by the normal callback and the
+-- process_exit late-delivery paths.
 function M.parse_export(stdout: string): ImportOutcome
 	local ok, doc = pcall(tern.json.decode, stdout)
 	if not ok or type(doc) ~= "table" or type(doc.credentials) ~= "table" then
@@ -188,7 +193,7 @@ function M.parse_export(stdout: string): ImportOutcome
 			continue
 		end
 		local base = baseurls[pname]
-		-- 名字匹配不到时，再用自定义 baseUrl 兜底匹配一次
+		-- If the name doesn't match, fall back to matching on the custom baseUrl once
 		local adapter_id = M.map_provider(pname)
 		if adapter_id == nil and base ~= nil then
 			local a = providers.match(base)
@@ -210,8 +215,9 @@ function M.parse_export(stdout: string): ImportOutcome
 	return { imported = imported, skipped = skipped }
 end
 
--- 退出四元组 → ImportOutcome：status == 0 且有输出才解析；超时被杀 / 信号
--- 退出（status = -1）与非零退出统一走 exportFailed。
+-- Exit quad → ImportOutcome: parse only when status == 0 and there is output;
+-- a killed timeout / signal exit (status = -1) and any nonzero exit both go
+-- through exportFailed.
 function M.outcome_from_exit(r: ExitQuad): ImportOutcome
 	if r.status == 0 and r.timed_out ~= true and r.stdout ~= "" then
 		return M.parse_export(r.stdout)

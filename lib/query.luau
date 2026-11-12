@@ -1,10 +1,11 @@
 --!strict
--- 🍟 查询层：tern.fetch 包装 + 状态分类 + 30s 成功缓存 + 指数退避。
--- 分类（对齐 cc-switch / dsh-musage 的错误通道语义）：
---   auth_failed  401/403            → 确定性失败，立刻报错
---   retryable   429/5xx            → 退避后重试，保留旧数据（stale）
---   transient   网络错误（r.error） → 同上
---   error       其余非 2xx / 解析失败 → 确定性失败
+-- 🍟 Query layer: tern.fetch wrapper + status classification + 30s success
+-- cache + exponential backoff.
+-- Classification (aligned with cc-switch / dsh-musage's error-channel semantics):
+--   auth_failed  401/403            → deterministic failure, error immediately
+--   retryable   429/5xx            → retry after backoff, keep old data (stale)
+--   transient   network error (r.error) → same
+--   error       other non-2xx / parse failure → deterministic failure
 
 export type Outcome =
 	| { ok: true, parsed: any }
@@ -21,7 +22,7 @@ local CACHE_TTL_MS = 30000
 local BACKOFF_BASE_S = 5
 local BACKOFF_MAX_S = 1800
 
--- 本 VM 内的成功缓存（每窗口各自一份，读 kv 不必每次都打网络）
+-- In-VM success cache (one entry per window; reads from kv don't hit the network every time)
 local cache: { [string]: { at: number, parsed: any } } = {}
 
 function M.cached(id: string): any
@@ -43,7 +44,7 @@ function M.backed_off(id: string): boolean
 	return e ~= nil and os.time() < e.untilTs
 end
 
--- 记一次可重试失败，返回新的退避秒数
+-- Record one retryable failure; returns the new backoff in seconds
 function M.note_failure(id: string): number
 	local bo = store.get_backoff()
 	local e = bo[id]
@@ -62,7 +63,8 @@ end
 
 ----------------------------------------------------------- fetch + parse
 
--- 依次尝试 adapter.requests 的候选请求；parse 返回 {fallback=true} 时前进到下一个。
+-- Walk adapter.requests' candidate requests in order; advance to the next
+-- one when parse returns {fallback=true}.
 function M.fetch_quota(
 	id: string,
 	adapter: any,
@@ -118,13 +120,14 @@ end
 
 --------------------------------------------------------- parsed → Result
 
--- 余额数字：≥100 取整，否则两位小数（币种只留数据，不再进显示文案）
+-- Balance number: ≥100 rounds to integer, otherwise two decimals
+-- (currency is kept as data only, never shown in display text)
 local function amount_text(amount: number): string
 	local body = if math.abs(amount) >= 100 then ("%.0f"):format(amount) else ("%.2f"):format(amount)
 	return body
 end
 
--- 解析结果 → 可存储/可展示的 Result；warnBelowPct 以下 → 薯条不多了，为 0 → 薯条没了
+-- Parsed → storable/displayable Result; below warnBelowPct → fries running low, at 0 → out of fries
 function M.to_result(parsed: any, warnBelowPct: number): store.Result
 	local lines: { store.Line } = {}
 	local alert: "low" | "out"? = nil

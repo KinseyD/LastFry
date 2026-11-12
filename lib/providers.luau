@@ -1,18 +1,21 @@
 --!strict
--- 🍟 供应商适配器注册表：每家 LLM 厂商「还剩多少薯条」怎么查、怎么读。
--- 端点与响应结构来自仓库外的逆向研究笔记（cc-switch + dsh-musage 逆向结论）。
+-- 🍟 Provider adapter registry: how to query and read "how many fries are
+-- left" for each LLM vendor.
+-- Endpoints and response shapes come from reverse-engineering research notes
+-- kept outside this repo (cc-switch + dsh-musage findings).
 --
--- 适配器约定：
---   requests(baseUrl, key) 返回一组候选请求（多数供应商只有一个；智谱在
---   「无 coding plan」时回退到余额端点，走第二个候选）。
---   parse(body, step, baseUrl) 解析第 step 个请求的响应：
---     · 返回 { fallback = true } → 尝试下一个候选请求；
---     · 返回 { err = "…" }      → 确定性失败（认证失败、结构不符等）；
---     · 返回 nil               → 响应无法解析（同样按确定性失败处理）。
+-- Adapter contract:
+--   requests(baseUrl, key) returns a list of candidate requests (most
+--   providers have one; zhipu falls back to the balance endpoint when there
+--   is no coding plan, as the second candidate).
+--   parse(body, step, baseUrl) parses the response of the step-th request:
+--     · { fallback = true }   → try the next candidate request;
+--     · { err = "…" }         → deterministic failure (auth failure, shape mismatch, etc.);
+--     · nil                   → response unparseable (treated as deterministic failure too).
 
 export type QuotaWindow = {
-	remainingPct: number, -- 剩余百分比 0..100（非已用）
-	resetAtMs: number?, -- 窗口重置时刻（epoch 毫秒）
+	remainingPct: number, -- remaining percent 0..100 (not used)
+	resetAtMs: number?, -- window reset time (epoch ms)
 }
 
 export type Parsed = {
@@ -21,10 +24,11 @@ export type Parsed = {
 	currency: string?, -- "CNY" | "USD" | ""
 	fiveHour: QuotaWindow?,
 	weekly: QuotaWindow?,
-	-- 30d 窗口：目前没有任何 Tier A 上游证据（zhipu unit 只有 3=5h/6=周，
-	-- kimi/minimax 只有 5h+7d），先打通字段，等有证据的适配器再填。
+	-- 30d window: no Tier-A upstream evidence yet (zhipu unit only has 3=5h/6=weekly;
+	-- kimi/minimax only 5h+7d) - the field is plumbed through now, to be filled by
+	-- an adapter with evidence later.
 	monthly: QuotaWindow?,
-	note: string?, -- 附注（套餐名、「不限量」等）
+	note: string?, -- note (plan name, "unlimited", etc.)
 	fallback: boolean?,
 	err: string?,
 }
@@ -33,9 +37,9 @@ export type Req = { url: string, headers: { [string]: string } }
 
 export type Adapter = {
 	id: string,
-	label: string, -- 管理面板类型下拉框里的名字
+	label: string, -- name in the manage panel's type dropdown
 	kind: "money" | "window",
-	needsBaseUrl: boolean?, -- sub2api 必填 baseUrl
+	needsBaseUrl: boolean?, -- sub2api requires a baseUrl
 	match: (baseUrl: string) -> boolean,
 	requests: (baseUrl: string?, key: string) -> { Req },
 	parse: (body: string, step: number, baseUrl: string?) -> Parsed?,
@@ -51,7 +55,7 @@ local function bearer(key: string): { [string]: string }
 	return { Authorization = "Bearer " .. key }
 end
 
--- 智谱是唯一一家 Authorization 不带 Bearer 前缀的（两个仓库一致）。
+-- zhipu is the only vendor whose Authorization has no Bearer prefix (consistent across both repos).
 local function raw(key: string): { [string]: string }
 	return { Authorization = key }
 end
@@ -81,7 +85,7 @@ local function money(amount: number?, currency: string?, note: string?): Parsed
 	return { kind = "money", amount = amount, currency = currency, note = note }
 end
 
--- limit/remaining 对 → 剩余百分比
+-- limit/remaining pair → remaining percent
 local function pct(remaining: any, total: any): number?
 	local r, t0 = tonumber(remaining), tonumber(total)
 	if r ~= nil and t0 ~= nil and t0 > 0 then
@@ -90,7 +94,7 @@ local function pct(remaining: any, total: any): number?
 	return nil
 end
 
--- 重置时间：epoch 秒 / epoch 毫秒 / ISO 字符串 → epoch 毫秒
+-- Reset time: epoch seconds / epoch ms / ISO string → epoch ms
 local function toMs(v: any): number?
 	local n = tonumber(v)
 	if n ~= nil then
@@ -143,7 +147,7 @@ local deepseek: Adapter = {
 		if type(infos) ~= "table" or #infos == 0 then
 			return fail(t("pv.missingField", "balance_infos"))
 		end
-		-- 多币种钱包：有余额的钱包优先展示；全是零就显示第一个
+		-- Multi-currency wallet: prefer a wallet with balance; if all are zero show the first
 		local best: any = nil
 		for _, info in infos do
 			local amt = tonumber(info.total_balance)
@@ -160,7 +164,7 @@ local deepseek: Adapter = {
 			return fail(t("pv.balanceMissing"))
 		end
 		local currency = if best.currency == "CNY" then "CNY" elseif best.currency == "USD" then "USD" else tostring(best.currency)
-		-- is_available:false 是「欠费/为零，无法调用」，不是 key 失效（401/403 才是）
+		-- is_available:false means "in arrears/zero balance, cannot call" - not a dead key (that's 401/403)
 		local note = if d.is_available == false then t("pv.balanceUnavailable") else nil
 		return money(amount, currency, note)
 	end,
@@ -176,7 +180,7 @@ local openrouter: Adapter = {
 		return baseUrl:find("openrouter", 1, true) ~= nil
 	end,
 	requests = function(_baseUrl, key)
-		-- 用 /api/v1/credits（账户余额）；/key 的 limit_remaining 是消费上限，不是余额
+		-- Use /api/v1/credits (account balance); /key's limit_remaining is a spend cap, not a balance
 		return { { url = "https://openrouter.ai/api/v1/credits", headers = bearer(key) } }
 	end,
 	parse = function(body)
@@ -300,12 +304,12 @@ local zhipu: Adapter = {
 		end
 		if step == 1 then
 			if d.success == false then
-				-- 业务码 40100–40199 视为认证失败（dsh-musage 的分类）
+				-- Business codes 40100-40199 mean auth failure (dsh-musage's classification)
 				local code = tonumber(d.code)
 				if code ~= nil and code >= 40100 and code <= 40199 then
 					return fail(t("pv.authFailedCode", math.floor(code)))
 				end
-				-- 其余 success:false（如「当前用户不存在coding plan」）→ 回退余额端点
+				-- Other success:false (e.g. "user has no coding plan") → fall back to the balance endpoint
 				return { fallback = true }
 			end
 			local data = d.data
@@ -317,8 +321,8 @@ local zhipu: Adapter = {
 			local weekly: QuotaWindow? = nil
 			for _, lim in limits do
 				if type(lim) == "table" then
-					local used = tonumber(lim.percentage) -- 服务端算好的「已用 %」
-					local unit = tonumber(lim.unit) -- 3 = 5h 窗口，6 = 周窗口
+					local used = tonumber(lim.percentage) -- server-computed "used %"
+					local unit = tonumber(lim.unit) -- 3 = 5h window, 6 = weekly window
 					if used ~= nil and unit ~= nil then
 						local w: QuotaWindow = { remainingPct = clamp100(100 - used), resetAtMs = toMs(lim.nextResetTime) }
 						if unit == 3 then
@@ -334,7 +338,7 @@ local zhipu: Adapter = {
 			end
 			return { kind = "window", fiveHour = five, weekly = weekly }
 		end
-		-- step 2：账户余额（按量付费账户）
+		-- step 2: account balance (pay-as-you-go accounts)
 		local data = d.data
 		local bal = tonumber(if type(data) == "table" then (data.availableBalance or data.balance) else nil)
 		if bal == nil then
@@ -348,8 +352,9 @@ local zhipu: Adapter = {
 
 -------------------------------------------------------------------- minimax
 
--- MiniMax 双结构：新版直接给 remaining_percent，旧版给 usage/total 计数。
--- current_weekly_status == 3 表示无周限制（跳过周窗口）。
+-- MiniMax dual shape: the new shape gives remaining_percent directly, the old
+-- one gives usage/total counts.
+-- current_weekly_status == 3 means no weekly limit (skip the weekly window).
 local function minimaxWindow(remainingPctV: any, statusV: any, usedCount: any, totalCount: any, endTime: any): QuotaWindow?
 	local status = tonumber(statusV)
 	if status == 3 then
@@ -375,7 +380,7 @@ local minimax: Adapter = {
 		return baseUrl:find("minimax", 1, true) ~= nil
 	end,
 	requests = function(baseUrl, key)
-		-- api.minimax.cn 是较新的推理域名、无配额 API：统一路由到 minimaxi.com / minimax.io
+		-- api.minimax.cn is a newer inference domain with no quota API: route uniformly to minimaxi.com / minimax.io
 		local host = if baseUrl and baseUrl:find("minimax.io", 1, true) then
 			"https://api.minimax.io"
 		else
@@ -453,7 +458,7 @@ local novita: Adapter = {
 		if rawBalance == nil then
 			return fail(t("pv.missingField", "availableBalance"))
 		end
-		return money(rawBalance / 10000, "USD") -- 单位是 0.0001 USD
+		return money(rawBalance / 10000, "USD") -- unit is 0.0001 USD
 	end,
 }
 
@@ -510,7 +515,7 @@ local sub2api: Adapter = {
 			local unit = if type(d.unit) == "string" then d.unit else ""
 			return money(remaining, unit, note)
 		end
-		-- remaining < 0 或缺失 = 不限量分组，不渲染数字
+		-- remaining < 0 or missing = unlimited group; don't render a number
 		local extra = t("pv.unlimited")
 		if type(d.quota) == "table" then
 			local limit, used = tonumber(d.quota.limit), tonumber(d.quota.used)
@@ -551,7 +556,7 @@ function M.by_id(id: string): Adapter?
 	return nil
 end
 
--- 按 baseUrl 猜适配器（加表单时预选 / omp 导入时兜底）
+-- Guess the adapter from baseUrl (preselect in the add form / fallback during omp import)
 function M.match(baseUrl: string): Adapter?
 	local url = baseUrl or ""
 	for _, a in list do
@@ -562,7 +567,7 @@ function M.match(baseUrl: string): Adapter?
 	return nil
 end
 
--- 类型下拉框选项（select 的 options）
+-- Type dropdown options (select's options)
 function M.options(): { { value: string, label: string, detail: string } }
 	local opts: { { value: string, label: string, detail: string } } = {}
 	for i, a in list do
