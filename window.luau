@@ -361,83 +361,130 @@ tern.timer(store.get_settings().rotateSec * 1000, rotate_tick)
 
 ------------------------------------------------------------------ omp import
 
+-- Pending-import marker: kv, NOT an upvalue — `omp auth export` can outlive
+-- this VM (hot reload mid-import, a daemon upgrade in place), and only kv
+-- survives the VM swap. tern.process.run gives back no pid when a callback
+-- is used (tern.d.luau: `-> ()`), so the match is single-flight: this plugin
+-- spawns exactly one child kind (omp auth export, the only process.run call
+-- site), so any `process_exit` while the marker is fresh is that export.
+-- startedAt bounds the match: the child is killed at timeout_ms = 15 s, so
+-- its exit event lands well inside the TTL; an older marker is a stale
+-- leftover, dropped without acting on the event.
+local PENDING_IMPORT = "pending_import"
+local PENDING_IMPORT_TTL_MS = 60_000
+
+-- The single completion path, shared by the normal omp.import callback (VM
+-- alive) and the process_exit event below (VM died mid-import). Only the
+-- fresh cx the callback chain / event carries may toast; the command's own
+-- cx is long dead by the time any of this runs.
+local function finish_import(outcome: omp.ImportOutcome, tcx: WindowCx?)
+	if outcome.err ~= nil then
+		if tcx ~= nil then
+			tcx:toast("error", t("omp.failed"), outcome.err)
+		else
+			tern.log.warn(t("omp.failed"), outcome.err)
+		end
+		return
+	end
+	local existing = store.get_providers()
+	local n = 0
+	local pending_keys = 0
+	local function finish(kcx: WindowCx?, tcx_live: boolean)
+		if n > 0 then
+			store.set_providers(existing)
+			sync_snapshot()
+			tern.chrome.refresh()
+			refresh(true) -- query only after every key is sealed, to avoid
+			-- the "API key not set" race
+		end
+		-- only a cx known to be alive may toast: the await callback's new
+		-- cx wins; on the async path omp's cbcx is long gone (in practice
+		-- it can even be a nil cx — rather stay silent than crash)
+		local toastcx: WindowCx? = if kcx ~= nil then kcx elseif tcx_live then tcx else nil
+		if toastcx ~= nil then
+			toastcx:toast(
+				if n > 0 then "success" else "info",
+				t("omp.imported", n, #outcome.skipped),
+				if #outcome.skipped > 0 then table.concat(outcome.skipped, t("omp.listSep")) else nil
+			)
+		else
+			tern.log.warn(t("log.importDone"), t("log.importDoneDetail", n, #outcome.skipped))
+		end
+	end
+	for _, imp in outcome.imported do
+		-- same name + type = same provider: update key/baseUrl instead of duplicating
+		local id: string? = nil
+		for _, p in existing do
+			if p.name == imp.name and p.type == imp.type then
+				id = p.id
+				p.baseUrl = imp.baseUrl
+				break
+			end
+		end
+		if id == nil then
+			id = store.next_id(imp.type)
+			table.insert(existing, {
+				id = id :: string,
+				name = imp.name,
+				type = imp.type,
+				baseUrl = imp.baseUrl,
+				enabled = true,
+			})
+		end
+		pending_keys += 1
+		tern.secrets.set(secret_name(id :: string), imp.key):next(function(_, err, kcx)
+			if err ~= nil then
+				tern.log.warn(t("log.keyWriteFailed"), id, err)
+			end
+			pending_keys -= 1
+			if pending_keys == 0 then
+				finish(kcx, false) -- the await callback carries a fresh cx
+				-- (the old code misused an undefined cx, so the success
+				-- toast never fired)
+			end
+		end)
+		n += 1
+	end
+	if pending_keys == 0 then
+		finish(nil, true) -- nothing imported: report at once (cbcx still live)
+	end
+end
+
 local function run_import()
+	-- Mark BEFORE spawning: if this VM dies while the child runs, the new
+	-- VM's process_exit handler below needs to find the marker to finish the
+	-- import.
+	tern.kv.set(PENDING_IMPORT, { startedAt = tern.now() })
 	omp.import(function(outcome, cbcx)
-		-- only the fresh cx the callback chain brings (process/await callbacks
-		-- carry one); the command's own cx may be long dead
-		local tcx: WindowCx? = cbcx
-		if outcome.err ~= nil then
-			if tcx ~= nil then
-				tcx:toast("error", t("omp.failed"), outcome.err)
-			else
-				tern.log.warn(t("omp.failed"), outcome.err)
-			end
-			return
-		end
-		local existing = store.get_providers()
-		local n = 0
-		local pending_keys = 0
-		local function finish(kcx: WindowCx?, tcx_live: boolean)
-			if n > 0 then
-				store.set_providers(existing)
-				sync_snapshot()
-				tern.chrome.refresh()
-				refresh(true) -- query only after every key is sealed, to avoid
-				-- the "API key not set" race
-			end
-			-- only a cx known to be alive may toast: the await callback's new
-			-- cx wins; on the async path omp's cbcx is long gone (in practice
-			-- it can even be a nil cx — rather stay silent than crash)
-			local toastcx: WindowCx? = if kcx ~= nil then kcx elseif tcx_live then tcx else nil
-			if toastcx ~= nil then
-				toastcx:toast(
-					if n > 0 then "success" else "info",
-					t("omp.imported", n, #outcome.skipped),
-					if #outcome.skipped > 0 then table.concat(outcome.skipped, t("omp.listSep")) else nil
-				)
-			else
-				tern.log.warn(t("log.importDone"), t("log.importDoneDetail", n, #outcome.skipped))
-			end
-		end
-		for _, imp in outcome.imported do
-			-- same name + type = same provider: update key/baseUrl instead of duplicating
-			local id: string? = nil
-			for _, p in existing do
-				if p.name == imp.name and p.type == imp.type then
-					id = p.id
-					p.baseUrl = imp.baseUrl
-					break
-				end
-			end
-			if id == nil then
-				id = store.next_id(imp.type)
-				table.insert(existing, {
-					id = id :: string,
-					name = imp.name,
-					type = imp.type,
-					baseUrl = imp.baseUrl,
-					enabled = true,
-				})
-			end
-			pending_keys += 1
-			tern.secrets.set(secret_name(id :: string), imp.key):next(function(_, err, kcx)
-				if err ~= nil then
-					tern.log.warn(t("log.keyWriteFailed"), id, err)
-				end
-				pending_keys -= 1
-				if pending_keys == 0 then
-					finish(kcx, false) -- the await callback carries a fresh cx
-					-- (the old code misused an undefined cx, so the success
-					-- toast never fired)
-				end
-			end)
-			n += 1
-		end
-		if pending_keys == 0 then
-			finish(nil, true) -- nothing imported: report at once (cbcx still live)
-		end
+		-- The VM survived, so this callback — not process_exit — delivers the
+		-- outcome (the event replaces the callback only when the VM that
+		-- started the child is gone); the two completion paths are mutually
+		-- exclusive by construction, and both must clear the marker.
+		tern.kv.set(PENDING_IMPORT, nil)
+		finish_import(outcome, cbcx)
 	end)
 end
+
+-- A child that outlived its VM: its callback died with that VM, and Tern
+-- re-delivers the outcome as a `process_exit` event in this (new) VM.
+-- Match it against the kv marker above, then run the SAME finish path as
+-- the normal callback — without this, a reload mid-import would silently
+-- lose the import. pcall: tern.on is old, but this event NAME is new; an
+-- older Tern may raise on it, and that must not fail the whole load.
+pcall(tern.on, "process_exit", function(ev: ProcessExitEvent, cx: WindowCx?)
+	local ok, marker = pcall(tern.kv.get, PENDING_IMPORT)
+	if not ok or type(marker) ~= "table" or type(marker.startedAt) ~= "number" then
+		return -- nothing pending (or kv unreadable): not ours, no-op
+	end
+	if tern.now() - marker.startedAt > PENDING_IMPORT_TTL_MS then
+		tern.kv.set(PENDING_IMPORT, nil) -- stale leftover: drop, still no-op
+		return
+	end
+	-- Ours: delete the marker FIRST (a second child from a double-triggered
+	-- import must not re-run the finish), then finish like the callback did.
+	tern.kv.set(PENDING_IMPORT, nil)
+	finish_import(omp.outcome_from_exit(ev), cx)
+end)
 
 --------------------------------------------------------------------- commands
 

@@ -20,6 +20,11 @@ export type ImportedEntry = {
 	key: string,
 }
 
+-- `omp auth export` 的退出四元组：tern.process.run 的 ProcessResult（正常
+-- 回调）与 process_exit 事件的 ProcessExitEvent（子进程活过了自己的 VM，
+-- 由重载后的新 VM 收尾）字段相同，共用同一条转换路径（outcome_from_exit）。
+export type ExitQuad = { status: number, stdout: string, stderr: string, timed_out: boolean }
+
 export type ImportOutcome = {
 	imported: { ImportedEntry },
 	skipped: { string }, -- 跳过原因（含供应商名）
@@ -48,22 +53,17 @@ local function first_line(s: string?): string
 	return (s:match("^[^\r\n]+")) or ""
 end
 
--- 依次尝试候选可执行文件跑 `auth export`；失败在 callback 里报
-local function run_export(cb: (stdout: string?, err: string?, cx: any) -> ())
+-- 依次尝试候选可执行文件跑 `auth export`；所有候选都起不来（不在 PATH
+-- 等）时以 r = nil 收尾，失败状态在 outcome_from_exit 里统一报。
+local function run_export(cb: (r: ExitQuad?, cx: any) -> ())
 	local candidates = exe_candidates()
 	local function attempt(i: number)
 		local exe = candidates[i]
 		if exe == nil then
-			cb(nil, t("omp.notFound"), nil)
+			cb(nil, nil)
 			return
 		end
-		local ok = pcall(tern.process.run, { exe, "auth", "export" }, { timeout_ms = 15000 }, function(r, cx)
-			if r.status == 0 and r.stdout ~= nil and r.stdout ~= "" then
-				cb(r.stdout, nil, cx)
-			else
-				cb(nil, t("omp.exportFailed", tostring(r.status), first_line(r.stderr)), cx)
-			end
-		end)
+		local ok = pcall(tern.process.run, { exe, "auth", "export" }, { timeout_ms = 15000 }, cb)
 		if not ok then
 			attempt(i + 1) -- 这个候选根本起不来（不在 PATH），换下一个
 		end
@@ -168,51 +168,64 @@ end
 
 ------------------------------------------------------------------ 导入主流程
 
+-- 解析 `omp auth export` 的 stdout；正常回调与 process_exit 补送两条路共用。
+function M.parse_export(stdout: string): ImportOutcome
+	local ok, doc = pcall(tern.json.decode, stdout)
+	if not ok or type(doc) ~= "table" or type(doc.credentials) ~= "table" then
+		return { imported = {}, skipped = {}, err = t("omp.badJson") }
+	end
+	local baseurls = M.read_models_baseurls()
+	local imported: { ImportedEntry } = {}
+	local skipped: { string } = {}
+	for _, cred in doc.credentials do
+		if type(cred) ~= "table" or type(cred.provider) ~= "string" then
+			continue
+		end
+		local pname = cred.provider
+		local c = cred.credential
+		if type(c) ~= "table" or c.type ~= "api_key" or type(c.key) ~= "string" or c.key == "" then
+			table.insert(skipped, t("omp.skip.notApiKey", pname))
+			continue
+		end
+		local base = baseurls[pname]
+		-- 名字匹配不到时，再用自定义 baseUrl 兜底匹配一次
+		local adapter_id = M.map_provider(pname)
+		if adapter_id == nil and base ~= nil then
+			local a = providers.match(base)
+			adapter_id = if a ~= nil then a.id else nil
+		end
+		if adapter_id == nil then
+			table.insert(skipped, t("omp.skip.unsupported", pname))
+		elseif adapter_id == "sub2api" and (base == nil or base == "") then
+			table.insert(skipped, t("omp.skip.sub2apiNoBase", pname))
+		else
+			table.insert(imported, {
+				name = pname,
+				type = adapter_id,
+				baseUrl = if base ~= nil and base ~= "" then base else nil,
+				key = c.key,
+			})
+		end
+	end
+	return { imported = imported, skipped = skipped }
+end
+
+-- 退出四元组 → ImportOutcome：status == 0 且有输出才解析；超时被杀 / 信号
+-- 退出（status = -1）与非零退出统一走 exportFailed。
+function M.outcome_from_exit(r: ExitQuad): ImportOutcome
+	if r.status == 0 and r.timed_out ~= true and r.stdout ~= "" then
+		return M.parse_export(r.stdout)
+	end
+	return { imported = {}, skipped = {}, err = t("omp.exportFailed", tostring(r.status), first_line(r.stderr)) }
+end
+
 function M.import(cb: (outcome: ImportOutcome, cx: any) -> ())
-	run_export(function(stdout, err, cx)
-		if stdout == nil then
-			cb({ imported = {}, skipped = {}, err = err }, cx)
+	run_export(function(r, cx)
+		if r == nil then
+			cb({ imported = {}, skipped = {}, err = t("omp.notFound") }, cx)
 			return
 		end
-		local ok, doc = pcall(tern.json.decode, stdout)
-		if not ok or type(doc) ~= "table" or type(doc.credentials) ~= "table" then
-			cb({ imported = {}, skipped = {}, err = t("omp.badJson") }, cx)
-			return
-		end
-		local baseurls = M.read_models_baseurls()
-		local imported: { ImportedEntry } = {}
-		local skipped: { string } = {}
-		for _, cred in doc.credentials do
-			if type(cred) ~= "table" or type(cred.provider) ~= "string" then
-				continue
-			end
-			local pname = cred.provider
-			local c = cred.credential
-			if type(c) ~= "table" or c.type ~= "api_key" or type(c.key) ~= "string" or c.key == "" then
-				table.insert(skipped, t("omp.skip.notApiKey", pname))
-				continue
-			end
-			local base = baseurls[pname]
-			-- 名字匹配不到时，再用自定义 baseUrl 兜底匹配一次
-			local adapter_id = M.map_provider(pname)
-			if adapter_id == nil and base ~= nil then
-				local a = providers.match(base)
-				adapter_id = if a ~= nil then a.id else nil
-			end
-			if adapter_id == nil then
-				table.insert(skipped, t("omp.skip.unsupported", pname))
-			elseif adapter_id == "sub2api" and (base == nil or base == "") then
-				table.insert(skipped, t("omp.skip.sub2apiNoBase", pname))
-			else
-				table.insert(imported, {
-					name = pname,
-					type = adapter_id,
-					baseUrl = if base ~= nil and base ~= "" then base else nil,
-					key = c.key,
-				})
-			end
-		end
-		cb({ imported = imported, skipped = skipped }, cx)
+		cb(M.outcome_from_exit(r), cx)
 	end)
 end
 
