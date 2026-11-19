@@ -14,7 +14,7 @@ A [Tern](https://docs.stencil.so/tern/) terminal plugin that monitors your LLM A
 _Manage block: one card per provider; usage bars shade continuously green → amber → red._
 
 ![Status line](images/status_line.png)
-_Status line: one live 🍟 segment group at a time, rotating through providers every few seconds._
+_Status line: one provider at a time as its own 🍟 segment group — the name, then one segment per window (5h, 7d, and 30d when present) — rotating through providers every few seconds._
 
 ## Install
 

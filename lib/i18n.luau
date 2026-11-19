@@ -12,6 +12,9 @@ local store = require("./store")
 local en: { [string]: string } = {
 	-- statusline segments (window half)
 	["status.pending"] = "🍟 %s …",
+	-- name-only segment: the windows follow as their own segments
+	["status.name"] = "🍟 %s",
+	-- name + one value in a single segment (today: money results)
 	["status.lead"] = "🍟 %s %s",
 	-- compact countdown in a statusline window part: days is the max unit
 	["status.cd.now"] = "now",
@@ -20,8 +23,6 @@ local en: { [string]: string } = {
 	["status.cd.d"] = "%dd",
 	-- countdown rides in parentheses after its own window's pct
 	["status.cd"] = " (%s)",
-	-- divider opening each continuation window segment (after a provider's first)
-	["status.divider"] = "· ",
 	["status.window5h"] = "5h %.0f%% left",
 	["status.window7d"] = "7d %.0f%% left",
 	["status.window30d"] = "30d %.0f%% left",

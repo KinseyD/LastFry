@@ -185,8 +185,9 @@ local function compact_countdown(resetAtMs: number): string
 	return t("status.cd.d", h // 24)
 end
 
--- one window part of the statusline: "5h 98% left (2h05m)" — the countdown
--- rides in parentheses after its own window's pct (only when it is known)
+-- one window segment of the statusline: "5h 98% left (2h05m)" — the
+-- countdown rides in parentheses after its own window's pct (only when it
+-- is known)
 local function window_part(tag: string, w: store.QuotaWindow): string
 	local key = if tag == "5h" then "status.window5h" elseif tag == "7d" then "status.window7d" else "status.window30d"
 	local part = t(key, w.remainingPct)
@@ -196,7 +197,7 @@ local function window_part(tag: string, w: store.QuotaWindow): string
 	return part
 end
 
--- tone for one window part, mirroring the card meters (BAD_USED = 0.98):
+-- tone for one window segment, mirroring the card meters (BAD_USED = 0.98):
 -- remaining ≤ 2% error, ≤ warnBelowPct warn, else ok
 local function window_tone(remainingPct: number, warnBelowPct: number): string
 	if remainingPct <= 2 then
@@ -210,10 +211,16 @@ end
 
 -- StatusSegment.text is a plain string (api-window.md: `text: string`,
 -- "Its text (required)") — no rich text, and tone is per segment — so a
--- provider renders as MULTIPLE segments: the first carries the 🍟 name and
--- the first window, each further window is its own segment, each with its
--- own tone. Money stays one segment; provider-level failure/staleness
--- mutes/errors every part.
+-- provider renders as MULTIPLE segments with no separator punctuation
+-- anywhere (the bar's segment gaps ARE the separation): segment 1 is the
+-- 🍟 name alone, then one segment per window the result actually has, in
+-- 5h → 7d → 30d order — monthly is plumbed but no adapter fills it yet,
+-- so the 30d segment exists only when one does. The name segment keeps
+-- the tone of the former merged lead segment (forced error/stale tone,
+-- else the first window's) plus the provider-level ⚠ on errors; each
+-- window segment tones on its own remaining pct. Money stays one segment
+-- (name + amount, as ever); provider-level failure/staleness
+-- mutes/errors every segment.
 local function provider_segments(name: string, result: store.Result?, warnBelowPct: number): { { text: string, tone: string } }
 	if result == nil then
 		return { { text = t("status.pending", name), tone = "muted" } }
@@ -238,19 +245,22 @@ local function provider_segments(name: string, result: store.Result?, warnBelowP
 		if #wins == 0 then
 			return { { text = t("status.noWindowData", name), tone = force_tone or "muted" } }
 		end
-		local parts: { { text: string, tone: string } } = {}
-		for i, e in wins do
-			local text = window_part(e.tag, e.w)
-			local tone = force_tone or window_tone(e.w.remainingPct, warnBelowPct)
-			if i == 1 then
-				text = t("status.lead", name, text)
-				if result.status == "error" then
-					text ..= " ⚠"
-				end
-			else
-				text = t("status.divider") .. text
-			end
-			table.insert(parts, { text = text, tone = tone })
+		-- segment 1: the name alone, toned like the former merged lead
+		-- segment (forced tone, else the first window's) and carrying the
+		-- provider-level error flag
+		local name_text = t("status.name", name)
+		if result.status == "error" then
+			name_text ..= " ⚠"
+		end
+		local parts: { { text: string, tone: string } } = {
+			{ text = name_text, tone = force_tone or window_tone(wins[1].w.remainingPct, warnBelowPct) },
+		}
+		-- segments 2..n: one per existing window, each toning on its own pct
+		for _, e in wins do
+			table.insert(parts, {
+				text = window_part(e.tag, e.w),
+				tone = force_tone or window_tone(e.w.remainingPct, warnBelowPct),
+			})
 		end
 		return parts
 	end
